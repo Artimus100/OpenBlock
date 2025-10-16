@@ -26,3 +26,12 @@ app.get('/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`API server running on port ${PORT}`);
 });
+
+
+app.post("/submit_block", (req, res) => {
+  const { window_id, ordered_hash } = req.body;
+  console.log(`🧩 Validator received block: window=${window_id} hash=${ordered_hash.slice(0, 16)}`);
+  res.json({ status: "accepted", slot: window_id });
+});
+
+app.listen(4000, () => console.log("🪄 Mock validator running on port 4000"));
