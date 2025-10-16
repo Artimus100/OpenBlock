@@ -5,6 +5,8 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import bundleRoutes from './routes/bundles';
 import statusRoutes from './routes/status';
+import metricsRoutes from './routes/metrics';
+import { treasuryService } from './services/treasury';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -18,13 +20,17 @@ app.use(express.json());
 // Routes
 app.use('/api/bundles', bundleRoutes);
 app.use('/api/status', statusRoutes);
+app.use('/api/metrics', metricsRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`API server running on port ${PORT}`);
+  
+  // Initialize treasury
+  await treasuryService.initializeTreasury();
 });
 
 

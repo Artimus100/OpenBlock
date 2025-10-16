@@ -1,6 +1,7 @@
 import express from "express";
 import Redis from "ioredis";
 import crypto from "crypto";
+import { metricsService } from "../services/metrics";
 
 const router = express.Router();
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
@@ -28,6 +29,9 @@ router.post("/", async (req, res) => {
     // Push to Redis queue for the current time window
     const window_id = Math.floor(Date.now() / 200); // 200ms "slot window"
     await redis.rpush(`bundle_window:${window_id}`, JSON.stringify(bundle));
+
+    // Record bundle metrics
+    await metricsService.recordBundle(bundle);
 
     return res.status(200).json({ status: "queued", bundle_id, window_id });
   } catch (err) {

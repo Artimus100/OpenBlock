@@ -4,10 +4,13 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{Signature, Keypair, Signer},
     transaction::Transaction,
+    system_instruction,
 };
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
@@ -192,6 +195,139 @@ pub enum BlockValidationError {
     InvalidStructure(String),
 }
 
+/// JSON summary of the assembled block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockSummary {
+    pub block_id: String,
+    pub total_fees: u64,
+    pub bundle_ids: Vec<String>,
+    pub transaction_count: usize,
+    pub timestamp: u64,
+    pub block_hash: String,
+}
+
+/// Assembles a block from winning bundles, aggregates transactions, computes block hash, and outputs JSON summary
+pub fn assemble_block(winning_bundles: Vec<Bundle>) -> Result<(Block, BlockSummary)> {
+    tracing::info!("🔨 Assembling block from {} winning bundles", winning_bundles.len());
+
+    // Generate unique block ID
+    let block_id = Uuid::new_v4().to_string();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // Aggregate all transactions from winning bundles
+    let mut all_transactions = Vec::new();
+    let mut total_fees = 0u64;
+    let mut bundle_ids = Vec::new();
+
+    for bundle in &winning_bundles {
+        // Add all transactions from this bundle
+        for transaction in &bundle.transactions {
+            all_transactions.push(transaction.clone());
+        }
+        
+        // Accumulate fees (tip_lamports represents the priority fee)
+        total_fees += bundle.tip_lamports;
+        bundle_ids.push(bundle.id.to_string());
+        
+        tracing::debug!(
+            "Added bundle {} with {} transactions and {} lamports tip",
+            bundle.id,
+            bundle.transactions.len(),
+            bundle.tip_lamports
+        );
+    }
+
+    // Compute deterministic block hash from all transactions and metadata
+    let block_hash = compute_block_hash(&all_transactions, &bundle_ids, timestamp)?;
+    let block_hash_string = hex::encode(block_hash);
+
+    // Create the block structure
+    let block = Block {
+        slot: 0, // Will be set by caller based on current slot
+        parent_hash: Hash::default(), // Will be set by caller
+        blockhash: Hash::from(block_hash),
+        transactions: all_transactions.clone(),
+        bundles: winning_bundles.clone(),
+        timestamp,
+        leader_pubkey: Pubkey::default(), // Will be set by caller
+        total_fees,
+        total_tips: total_fees, // In this case, tips are the fees
+    };
+
+    // Create JSON summary
+    let summary = BlockSummary {
+        block_id,
+        total_fees,
+        bundle_ids,
+        transaction_count: all_transactions.len(),
+        timestamp,
+        block_hash: block_hash_string,
+    };
+
+    tracing::info!(
+        "✅ Block assembled: {} transactions, {} bundles, {} total fees, hash: {}",
+        summary.transaction_count,
+        summary.bundle_ids.len(),
+        summary.total_fees,
+        &summary.block_hash[..16]
+    );
+
+    Ok((block, summary))
+}
+
+/// Computes a deterministic hash for the block based on transactions, bundles, and timestamp
+fn compute_block_hash(
+    transactions: &[Transaction],
+    bundle_ids: &[String],
+    timestamp: u64,
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    
+    // Hash timestamp first for uniqueness
+    hasher.update(timestamp.to_le_bytes());
+    
+    // Hash each transaction
+    for tx in transactions {
+        // Serialize transaction and hash it
+        let tx_bytes = bincode::serialize(tx)?;
+        hasher.update(&tx_bytes);
+    }
+    
+    // Hash bundle IDs for deterministic ordering
+    for bundle_id in bundle_ids {
+        hasher.update(bundle_id.as_bytes());
+    }
+    
+    Ok(hasher.finalize().into())
+}
+
+/// Extended version that allows customization of block parameters
+pub fn assemble_block_with_params(
+    winning_bundles: Vec<Bundle>,
+    slot: u64,
+    parent_hash: Hash,
+    leader_pubkey: Pubkey,
+) -> Result<(Block, BlockSummary)> {
+    let (mut block, summary) = assemble_block(winning_bundles)?;
+    
+    // Update block with provided parameters
+    block.slot = slot;
+    block.parent_hash = parent_hash;
+    block.leader_pubkey = leader_pubkey;
+    
+    tracing::info!(
+        "🎯 Block assembled for slot {} with leader {} and parent hash {}",
+        slot,
+        leader_pubkey,
+        parent_hash
+    );
+    
+    Ok((block, summary))
+}
+
 // Mock validator client for testing
 #[derive(Debug)]
 pub struct MockValidatorClient {
@@ -238,9 +374,11 @@ mod tests {
     use super::*;
     use crate::bundle::Bundle;
     use solana_sdk::{
-        signature::Keypair,
-        system_instruction,
+        instruction::Instruction,
+        message::Message,
+        signature::Signature,
         transaction::Transaction,
+        pubkey::Pubkey,
     };
 
     fn create_test_bundle(tip: u64, tx_count: usize) -> Bundle {
@@ -358,5 +496,89 @@ mod tests {
         };
 
         assert!(client.submit_block(block).await.is_err());
+    }
+
+    #[test]
+    fn test_assemble_block_functionality() {
+        // Create test bundles with transactions
+        let mut bundles = Vec::new();
+        
+        for i in 0..3 {
+            let instruction = Instruction::new_with_bytes(
+                Pubkey::new_unique(),
+                &[i as u8; 32],
+                vec![],
+            );
+            
+            let message = Message::new(
+                &[instruction],
+                Some(&Pubkey::new_unique()),
+            );
+            
+            let transaction = Transaction {
+                signatures: vec![Signature::default()],
+                message,
+            };
+            
+            let bundle = Bundle::new(
+                vec![transaction],
+                (i + 1) * 1000000, // 1M, 2M, 3M lamports
+                format!("searcher_{}", i),
+            );
+            
+            bundles.push(bundle);
+        }
+
+        // Assemble block
+        let result = assemble_block(bundles.clone());
+        assert!(result.is_ok());
+        
+        let (block, summary) = result.unwrap();
+        
+        // Verify block properties
+        assert_eq!(block.transactions.len(), 3);
+        assert_eq!(block.bundles.len(), 3);
+        assert_eq!(block.total_fees, 6000000); // 1M + 2M + 3M
+        assert_eq!(block.total_tips, 6000000);
+        
+        // Verify summary
+        assert_eq!(summary.transaction_count, 3);
+        assert_eq!(summary.bundle_ids.len(), 3);
+        assert_eq!(summary.total_fees, 6000000);
+        assert!(!summary.block_hash.is_empty());
+        assert!(!summary.block_id.is_empty());
+        
+        // Verify deterministic hashing - same bundles should produce same hash
+        let (_, summary2) = assemble_block(bundles).unwrap();
+        assert_ne!(summary.block_hash, summary2.block_hash); // Different because timestamp differs
+        assert_ne!(summary.block_id, summary2.block_id); // Different block IDs
+    }
+
+    #[test]
+    fn test_assemble_block_with_params() {
+        let bundle = Bundle::new(
+            vec![], // Empty for test
+            1000000,
+            "test_searcher".to_string(),
+        );
+        
+        let slot = 12345;
+        let parent_hash = Hash::new_unique();
+        let leader_pubkey = Pubkey::new_unique();
+        
+        let result = assemble_block_with_params(
+            vec![bundle],
+            slot,
+            parent_hash,
+            leader_pubkey,
+        );
+        
+        assert!(result.is_ok());
+        let (block, _summary) = result.unwrap();
+        
+        assert_eq!(block.slot, slot);
+        assert_eq!(block.parent_hash, parent_hash);
+        assert_eq!(block.leader_pubkey, leader_pubkey);
+        assert_eq!(block.total_fees, 1000000);
     }
 }

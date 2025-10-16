@@ -7,6 +7,11 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
 
   postgres:
     image: postgres:15-alpine
@@ -18,16 +23,45 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U builder"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  api-server:
+    build:
+      context: ./api-server
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+      - "4000:4000"  # Mock validator
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://builder:password@postgres:5432/block_builder
+      PORT: 3001
+    volumes:
+      - ./api-server:/app
+      - /app/node_modules
+    command: npm run dev
 
   block-engine:
     build: .
     ports:
       - "8080:8080"
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
+    volumes:
+      - ./block-engine:/app/block-engine
+      - ./target:/app/target
       DATABASE_URL: postgresql://builder:password@postgres:5432/block_builder
 
   api-server:

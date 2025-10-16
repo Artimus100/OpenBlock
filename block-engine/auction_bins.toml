@@ -1,0 +1,7 @@
+[[bin]]
+name = "auction_demo"
+path = "src/auction_demo.rs"
+
+[[bin]]
+name = "block-engine"
+path = "src/main.rs"
