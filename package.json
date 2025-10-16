@@ -1,0 +1,22 @@
+{
+  "name": "permissionless-block-builder",
+  "version": "1.0.0",
+  "description": "Decentralized block building infrastructure for Solana",
+  "private": true,
+  "workspaces": [
+    "api-server",
+    "frontend-dashboard"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:frontend\"",
+    "dev:api": "cd api-server && npm run dev",
+    "dev:frontend": "cd frontend-dashboard && npm run dev",
+    "build:rust": "cargo build --release --workspace",
+    "test:rust": "cargo test --workspace",
+    "build:all": "npm run build:rust && npm run build:frontend",
+    "build:frontend": "cd frontend-dashboard && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

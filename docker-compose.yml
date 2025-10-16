@@ -1,0 +1,46 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: block_builder
+      POSTGRES_USER: builder
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  block-engine:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://builder:password@postgres:5432/block_builder
+
+  api-server:
+    build: .
+    command: node /app/api-server/index.js
+    ports:
+      - "3001:3001"
+    depends_on:
+      - redis
+      - postgres                                                                    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://builder:password@postgres:5432/block_builder
+
+volumes:
+  redis_data:
+  postgres_data:
